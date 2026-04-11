@@ -1,0 +1,390 @@
+{
+  "name": "LinkedIn Whatsapp Agent",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 8
+            }
+          ]
+        }
+      },
+      "id": "5ceba171-9e6d-4a55-ac68-cda3b6ce095f",
+      "name": "Every Day at 8am",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -2480,
+        736
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "profile-ids",
+              "name": "linkedinProfileIds",
+              "value": "={{ [\n  'andrewyng',\n  'yann-lecun',\n  'alliekmiller'\n] }}",
+              "type": "array"
+            },
+            {
+              "id": "hours-lookback",
+              "name": "hoursLookback",
+              "value": 24,
+              "type": "number"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "c7075186-3f46-43a3-a840-fe21b1ac7bf3",
+      "name": "Config: Profiles to Monitor",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -2256,
+        736
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Split profile IDs into individual items for HTTP requests\nconst profileIds = $input.first().json.linkedinProfileIds;\nconst hoursLookback = $input.first().json.hoursLookback;\n\nreturn profileIds.map(profileId => ({\n  json: {\n    profileId,\n    hoursLookback,\n    cutoffTimestamp: new Date(Date.now() - hoursLookback * 60 * 60 * 1000).toISOString()\n  }\n}));"
+      },
+      "id": "44293ebe-3d1a-4abd-8464-5cbd21602f7e",
+      "name": "Split Profiles",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2032,
+        736
+      ]
+    },
+    {
+      "parameters": {
+        "url": "=https://linkedin-scraper-api-real-time-fast-affordable.p.rapidapi.com/profile/posts",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "username",
+              "value": "={{ $json.profileId }}"
+            },
+            {
+              "name": "page_number",
+              "value": "1"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-RapidAPI-Host",
+              "value": "linkedin-scraper-api-real-time-fast-affordable.p.rapidapi.com"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "cea122bd-cddb-4814-a5e8-f87e9028fe2f",
+      "name": "Fetch LinkedIn Posts",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -1584,
+        656
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "hBh7pYC8hpQ9Wyke",
+          "name": "RapidAPI-Linkedin Scraper API-Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const cutoffMs = Date.now() - 7 * 24 * 60 * 60 * 1000;\nconst profileId = $('Split Profiles').item.json.profileId;\n\nconst response = $input.first().json;\nconst posts = response.data?.posts ?? [];\n\nif (!Array.isArray(posts) || posts.length === 0) {\n  console.log(`[${profileId}] No posts in response`);\n  return [];\n}\n\nconst recentPosts = posts.filter(post => {\n  if (post.post_type === 'repost') return false;\n  const ts = post.posted_at?.timestamp;\n  if (!ts) return false;\n  return ts > cutoffMs;\n});\n\nconsole.log(`[${profileId}] Total: ${posts.length}, Within 7 days: ${recentPosts.length}`);\n\nif (recentPosts.length === 0) return [];\n\nreturn recentPosts.map(post => ({\n  json: {\n    profileId: post.author?.username ?? profileId,\n    postId: post.urn?.activity_urn ?? post.full_urn ?? '',\n    authorName: `${post.author?.first_name ?? ''} ${post.author?.last_name ?? ''}`.trim() || profileId,\n    authorHeadline: post.author?.headline ?? '',\n    postText: post.text ?? '',\n    postUrl: post.url ?? `https://www.linkedin.com/in/${profileId}/`,\n    postedAt: new Date(post.posted_at.timestamp).toISOString(),\n    likes: post.stats?.like ?? 0,\n    comments: post.stats?.comments ?? 0,\n    reposts: post.stats?.reposts ?? 0\n  }\n}));"
+      },
+      "id": "08eb4956-ee59-4c44-9a79-cf9602026747",
+      "name": "Filter New Posts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1360,
+        656
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 512, messages: [{ role: 'user', content: 'You are an AI assistant that summarises LinkedIn posts concisely for busy professionals.\\n\\nSummarise the following LinkedIn post in 3-5 bullet points. Each bullet should be one short sentence. Focus on the key insight, announcement, or opinion. End with one sentence on why it matters.\\n\\nAuthor: ' + $json.authorName + '\\nHeadline: ' + $json.authorHeadline + '\\nPost date: ' + $json.postedAt + '\\nEngagement: ' + $json.likes + ' likes · ' + $json.comments + ' comments · ' + $json.reposts + ' reposts\\n\\nPost content:\\n' + $json.postText + '\\n\\nRespond only with the bullet points and the \\'Why it matters\\' sentence. No preamble.' }] }) }}",
+        "options": {}
+      },
+      "id": "d484eae3-c4f5-49a3-94c5-4c571a1b4b41",
+      "name": "Claude: Summarise Post",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -912,
+        736
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "naFvJaTS7NoXe1Lf",
+          "name": "Anthropic-Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract Claude's summary text and merge with post metadata\nconst summary = $input.first().json.content?.[0]?.text || 'No summary available.';\nconst post = $('Check If Posts Found').item.json;\n\nconst dateStr = new Date(post.postedAt).toLocaleDateString('en-GB', {\n  day: '2-digit', month: 'short', year: 'numeric'\n});\n\nconst message = [\n  `*LinkedIn Update* — ${post.authorName}`,\n  `_${dateStr}_  ·  ${post.likes} likes  ·  ${post.comments} comments`,\n  ``,\n  summary,\n  ``,\n  `Read full post: ${post.postUrl}`\n].join('\\n');\n\nreturn [{ json: { message, ...post, summary } }];"
+      },
+      "id": "a384ae52-e0f5-4cb1-adf2-64567377b2cd",
+      "name": "Format WhatsApp Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -688,
+        736
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.twilio.com/2010-04-01/Accounts/YOUR_TWILIO_ACCOUNT_SID/Messages.json",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "twilioApi",
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "From",
+              "value": "whatsapp:+14155238886"
+            },
+            {
+              "name": "To",
+              "value": "whatsapp:+YOUR_WHATSAPP_NUMBER"
+            },
+            {
+              "name": "Body",
+              "value": "={{ $json.message ?? \"New LinkedIn post from \" + $json.authorName }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "2e298d54-8d05-45c4-90f4-0f1f5d53911c",
+      "name": "Send WhatsApp (Twilio)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -464,
+        736
+      ],
+      "credentials": {
+        "twilioApi": {
+          "id": "vtJZjqDI2pmWMBDg",
+          "name": "Twilio Basic Auth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "has-posts",
+              "leftValue": "={{ $json.postText }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "exists"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "d3ec3a0b-3175-4b70-ab43-c57f75d63175",
+      "name": "Check If Posts Found",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -1136,
+        736
+      ]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "45fa6ea3-da2d-4619-a9ee-2544944297ac",
+      "name": "Loop Through Profiles",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        -1808,
+        736
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Every Day at 8am": {
+      "main": [
+        [
+          {
+            "node": "Config: Profiles to Monitor",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config: Profiles to Monitor": {
+      "main": [
+        [
+          {
+            "node": "Split Profiles",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Profiles": {
+      "main": [
+        [
+          {
+            "node": "Loop Through Profiles",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch LinkedIn Posts": {
+      "main": [
+        [
+          {
+            "node": "Filter New Posts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter New Posts": {
+      "main": [
+        [
+          {
+            "node": "Check If Posts Found",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claude: Summarise Post": {
+      "main": [
+        [
+          {
+            "node": "Format WhatsApp Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format WhatsApp Message": {
+      "main": [
+        [
+          {
+            "node": "Send WhatsApp (Twilio)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check If Posts Found": {
+      "main": [
+        [
+          {
+            "node": "Claude: Summarise Post",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Loop Through Profiles",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Through Profiles": {
+      "main": [
+        [
+          {
+            "node": "Loop Through Profiles",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Fetch LinkedIn Posts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "dfb64da6-dbbb-4a43-8886-5794d1b9faa2",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "c050ab9000e99829136a88b332ee7b550a2775a36927c5d5d5a0b67a91e7afc7"
+  },
+  "id": "ZsTPUgVGz9TyC70B",
+  "tags": []
+}
