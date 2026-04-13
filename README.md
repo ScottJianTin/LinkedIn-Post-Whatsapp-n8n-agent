@@ -1,6 +1,6 @@
 # LinkedIn → WhatsApp AI Agent
 
-An n8n workflow that monitors LinkedIn profiles hourly, summarises new posts with Claude, and delivers them to your WhatsApp via Twilio.
+An n8n workflow that monitors LinkedIn profiles daily, summarises new posts with Claude, and delivers them to your WhatsApp via Twilio.
 
 ## How it works
 
